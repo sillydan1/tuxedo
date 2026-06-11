@@ -1,8 +1,9 @@
 use super::Store;
 use super::outcome::{
     AddOutcome, BulkCompleteOutcome, BulkDeleteOutcome, CompleteOutcome, DeleteOutcome,
-    EditOutcome, PriorityOutcome, Reconcile, StoreError, TagOutcome,
+    EditNoteOutcome, EditOutcome, NoteOutcome, PriorityOutcome, Reconcile, StoreError, TagOutcome,
 };
+use crate::notes;
 use crate::recurrence::{self, RecSpec};
 use crate::todo::{self, TagError};
 
@@ -248,6 +249,78 @@ impl Store {
             .collect::<Vec<_>>()
             .join(" ");
         self.rewrite_raw(abs, &new_raw)
+    }
+
+    pub fn add_note(&mut self, abs: usize) -> NoteOutcome {
+        let config = notes::NoteConfig::from_env(&self.file_path);
+        self.add_note_with_config(abs, config)
+    }
+
+    pub fn edit_note_target(&mut self, abs: usize) -> EditNoteOutcome {
+        let config = notes::NoteConfig::from_env(&self.file_path);
+        self.edit_note_target_with_config(abs, config)
+    }
+
+    fn edit_note_target_with_config(
+        &mut self,
+        abs: usize,
+        config: notes::NoteConfig,
+    ) -> EditNoteOutcome {
+        if !notes::is_valid_note_tag(&config.tag) {
+            return EditNoteOutcome::Error(StoreError::NoteConfig("invalid note tag".to_string()));
+        }
+        match self.reconcile() {
+            Reconcile::Unchanged => {}
+            other => return EditNoteOutcome::Aborted(other),
+        }
+        let Some(task) = self.tasks.get(abs) else {
+            return EditNoteOutcome::OutOfRange;
+        };
+        let Some(name) = notes::existing_note_name(&task.raw, &config.tag) else {
+            return EditNoteOutcome::Missing { abs };
+        };
+        match notes::path_for_note_name(&config, &name) {
+            Ok(path) => EditNoteOutcome::Found { abs, name, path },
+            Err(e) => EditNoteOutcome::Error(StoreError::NoteIo(e)),
+        }
+    }
+
+    fn add_note_with_config(&mut self, abs: usize, config: notes::NoteConfig) -> NoteOutcome {
+        if !notes::is_valid_note_tag(&config.tag) {
+            return NoteOutcome::Error(StoreError::NoteConfig("invalid note tag".to_string()));
+        }
+        match self.reconcile() {
+            Reconcile::Unchanged => {}
+            other => return NoteOutcome::Aborted(other),
+        }
+        let Some(task) = self.tasks.get(abs) else {
+            return NoteOutcome::OutOfRange;
+        };
+        if let Some(name) = notes::existing_note_name(&task.raw, &config.tag) {
+            let path = config.dir.join(&name);
+            return NoteOutcome::AlreadyExists { abs, name, path };
+        }
+        let title = notes::title_for_task(&task.raw);
+        let created = match notes::create_note_file(&config, &title) {
+            Ok(created) => created,
+            Err(e) => return NoteOutcome::Error(StoreError::NoteIo(e)),
+        };
+        let new_raw = format!("{} {}:{}", task.raw.trim_end(), config.tag, created.name);
+        match self.rewrite_raw(abs, &new_raw) {
+            EditOutcome::Saved { abs } => NoteOutcome::Added {
+                abs,
+                name: created.name,
+                path: created.path,
+            },
+            EditOutcome::Error(e) => {
+                let _ = std::fs::remove_file(&created.path);
+                NoteOutcome::Error(e)
+            }
+            _ => {
+                let _ = std::fs::remove_file(&created.path);
+                NoteOutcome::Error(StoreError::NoteConfig("could not attach note".to_string()))
+            }
+        }
     }
 
     /// Parse `new_raw`, snapshot for undo, replace the task at `abs`, persist.
@@ -657,6 +730,54 @@ mod tests {
         assert!(matches!(
             store.remove_term_at(0, "+nope"),
             EditOutcome::TermNotFound
+        ));
+    }
+
+    #[test]
+    fn add_note_creates_file_and_appends_note_token() {
+        let mut store = build_store("2026-05-01 Cook cake +party\n");
+        let config = notes::NoteConfig::default_for_path(store.file_path());
+        let out = store.add_note_with_config(0, config);
+        let (name, path) = match out {
+            NoteOutcome::Added { name, path, .. } => (name, path),
+            other => panic!("expected note added, got {other:?}"),
+        };
+        assert!(store.tasks()[0].raw.ends_with(&format!(" note:{name}")));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "# Cook cake\n");
+    }
+
+    #[test]
+    fn add_note_is_noop_when_task_already_has_note() {
+        let mut store = build_store("Cook cake note:abc.txt\n");
+        let config = notes::NoteConfig::default_for_path(store.file_path());
+        let out = store.add_note_with_config(0, config);
+        assert!(matches!(out, NoteOutcome::AlreadyExists { name, .. } if name == "abc.txt"));
+        assert_eq!(store.tasks()[0].raw, "Cook cake note:abc.txt");
+    }
+
+    #[test]
+    fn edit_note_target_resolves_existing_note_path() {
+        let mut store = build_store("Cook cake note:abc.txt\n");
+        let config = notes::NoteConfig::default_for_path(store.file_path());
+        let expected = config.dir.join("abc.txt");
+        let out = store.edit_note_target_with_config(0, config);
+        match out {
+            EditNoteOutcome::Found { abs, name, path } => {
+                assert_eq!(abs, 0);
+                assert_eq!(name, "abc.txt");
+                assert_eq!(path, expected);
+            }
+            other => panic!("expected note target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_note_target_reports_missing_note() {
+        let mut store = build_store("Cook cake\n");
+        let config = notes::NoteConfig::default_for_path(store.file_path());
+        assert!(matches!(
+            store.edit_note_target_with_config(0, config),
+            EditNoteOutcome::Missing { abs: 0 }
         ));
     }
 

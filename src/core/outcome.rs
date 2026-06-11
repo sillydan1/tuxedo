@@ -5,6 +5,8 @@
 //! render a message and, for the TUI, re-derive the cursor. The TUI maps these
 //! to flash strings; the CLI maps them to stdout/exit codes.
 
+use std::path::PathBuf;
+
 use crate::todo::{ParseError, TagError};
 
 /// An I/O or parse failure from a [`Store`](super::Store) operation.
@@ -18,6 +20,10 @@ pub enum StoreError {
     Parse(ParseError),
     /// A `+project` / `@context` mutation was rejected.
     Tag(TagError),
+    /// Creating or writing a note file failed.
+    NoteIo(std::io::Error),
+    /// Note add-on environment/configuration was invalid.
+    NoteConfig(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -27,6 +33,8 @@ impl std::fmt::Display for StoreError {
             StoreError::ArchiveIo(e) => write!(f, "done.txt: {e}"),
             StoreError::Parse(e) => write!(f, "{e}"),
             StoreError::Tag(e) => write!(f, "{e}"),
+            StoreError::NoteIo(e) => write!(f, "note: {e}"),
+            StoreError::NoteConfig(e) => write!(f, "note: {e}"),
         }
     }
 }
@@ -100,6 +108,38 @@ pub enum EditOutcome {
     Empty,
     /// `remove_term_at`: the requested term wasn't present on the line.
     TermNotFound,
+    OutOfRange,
+    Aborted(Reconcile),
+    Error(StoreError),
+}
+
+#[derive(Debug)]
+pub enum EditNoteOutcome {
+    Found {
+        abs: usize,
+        name: String,
+        path: PathBuf,
+    },
+    Missing {
+        abs: usize,
+    },
+    OutOfRange,
+    Aborted(Reconcile),
+    Error(StoreError),
+}
+
+#[derive(Debug)]
+pub enum NoteOutcome {
+    Added {
+        abs: usize,
+        name: String,
+        path: PathBuf,
+    },
+    AlreadyExists {
+        abs: usize,
+        name: String,
+        path: PathBuf,
+    },
     OutOfRange,
     Aborted(Reconcile),
     Error(StoreError),

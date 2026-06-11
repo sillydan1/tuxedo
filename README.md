@@ -334,7 +334,7 @@ Custom bindings are checked before the defaults. The default bindings remain
 available unless the same key or two-key chord is bound to another action in
 the file. Action names are snake_case, matching the names in the command
 palette where possible: `toggle_complete`, `pick_project`,
-`open_theme_picker`, and so on. Key names can be single characters, two-key
+`add_note`, `edit_note`, `open_theme_picker`, and so on. Key names can be single characters, two-key
 chords like `ZZ`, modifier forms like `Ctrl-n` / `Alt-x`, named keys like
 `Esc`, `Enter`, `Tab`, arrows, `Page-Up`, `Page-Down`, or `F1` through `F24`.
 
@@ -362,6 +362,8 @@ chords like `ZZ`, modifier forms like `Ctrl-n` / `Alt-x`, named keys like
 | `+` | add a project |
 | `yy` | copy current line to clipboard |
 | `yb` | copy current body only (no priority, dates, projects, contexts, `key:value`) |
+| `m` | add a note file and append `note:<file>` to the current task |
+| `M` | edit the current task's note with `$EDITOR` |
 | `u` | undo (50 levels) |
 
 ### Edit dialog
@@ -430,6 +432,14 @@ The modal keys below apply in Normal mode:
 Two-key chord prompts (`gg`, `dd`, `yy`, `yb`, `fp`, `fc`, `ff`, `fs`) show
 a `g…` / `d…` / `y…` / `f…` indicator in the status-bar mode chip while the
 leader is armed; the window is 600 ms.
+
+Pressing `m` creates a todo.txt-cli `note` add-on compatible note for the
+current task. By default tuxedo writes the file under a sibling `notes/`
+directory and appends `note:<file>.txt` to the task. Pressing `M` opens an
+existing note for the current task using `$EDITOR`; if no matching `note:`
+token is present, tuxedo leaves the task unchanged and flashes a hint. The
+add-on environment variables are honored when present: `TODO_NOTES_DIR`,
+`TODO_NOTE_TAG`, `TODO_NOTE_TEMPLATE`, and `TODO_NOTE_EXT`.
 
 Copy uses the OSC 52 terminal escape, so it works locally and over SSH on
 any terminal that supports it (kitty, alacritty, wezterm, iTerm2, foot,

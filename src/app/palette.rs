@@ -68,6 +68,16 @@ pub const ENTRIES: &[PaletteEntry] = &[
         action: Action::CopyBody,
     },
     PaletteEntry {
+        label: "add note to current task",
+        keys: "m",
+        action: Action::AddNote,
+    },
+    PaletteEntry {
+        label: "edit note for current task",
+        keys: "M",
+        action: Action::EditNote,
+    },
+    PaletteEntry {
         label: "undo",
         keys: "u",
         action: Action::Undo,
@@ -533,6 +543,8 @@ mod tests {
             Action::ToggleShowFuture,
             Action::CopyLine,
             Action::CopyBody,
+            Action::AddNote,
+            Action::EditNote,
             Action::EscapeStack,
             Action::OpenShare,
             Action::OpenThemePicker,
