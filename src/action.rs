@@ -45,6 +45,10 @@ pub enum Action {
     ToggleShowFuture,
     CopyLine,
     CopyBody,
+    /// Create a todo.txt-cli-note-compatible note for the current task.
+    AddNote,
+    /// Open the current task's existing note in `$EDITOR`.
+    EditNote,
     EscapeStack,
     /// Open the phone-capture overlay (QR + URL). First invocation lazily
     /// binds the HTTP server; subsequent invocations just re-show the
@@ -97,6 +101,8 @@ impl Action {
             "toggle_show_future" => Some(Self::ToggleShowFuture),
             "copy_line" => Some(Self::CopyLine),
             "copy_body" => Some(Self::CopyBody),
+            "add_note" | "note" => Some(Self::AddNote),
+            "edit_note" | "note_edit" => Some(Self::EditNote),
             "escape_stack" | "escape" => Some(Self::EscapeStack),
             "open_share" | "share" => Some(Self::OpenShare),
             "open_theme_picker" | "theme_picker" => Some(Self::OpenThemePicker),

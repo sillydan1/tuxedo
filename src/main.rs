@@ -1,6 +1,8 @@
 #![warn(clippy::unwrap_used)]
 
 use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -196,7 +198,9 @@ fn run(mut terminal: DefaultTerminal, app: &mut App, keybinds: &KeyBindings) -> 
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    handle_key(app, key, keybinds);
+                    if let ActionEffect::EditNote { name, path } = handle_key(app, key, keybinds) {
+                        edit_note_with_editor(&mut terminal, app, &name, &path);
+                    }
                     dirty = true;
                 }
                 // A terminal resize must trigger an immediate redraw;
@@ -222,6 +226,49 @@ fn run(mut terminal: DefaultTerminal, app: &mut App, keybinds: &KeyBindings) -> 
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActionEffect {
+    None,
+    EditNote { name: String, path: PathBuf },
+}
+
+fn edit_note_with_editor(terminal: &mut DefaultTerminal, app: &mut App, name: &str, path: &Path) {
+    let Some(editor) = std::env::var_os("EDITOR").filter(|value| !value.is_empty()) else {
+        app.flash("$EDITOR not set");
+        return;
+    };
+    let editor = editor.to_string_lossy().to_string();
+
+    ratatui::restore();
+    let status = run_editor_command(&editor, path);
+    *terminal = ratatui::init();
+
+    if !app.check_external_changes() {
+        return;
+    }
+    match status {
+        Ok(status) if status.success() => app.flash(format!("edited note:{name}")),
+        Ok(status) => app.flash(format!("editor exited with {status}")),
+        Err(e) => app.flash(format!("editor failed: {e}")),
+    }
+}
+
+#[cfg(not(windows))]
+fn run_editor_command(editor: &str, path: &Path) -> io::Result<ExitStatus> {
+    Command::new("sh")
+        .arg("-c")
+        .arg("exec ${EDITOR:-vi} \"$@\"")
+        .arg("tuxedo-editor")
+        .arg(path)
+        .env("EDITOR", editor)
+        .status()
+}
+
+#[cfg(windows)]
+fn run_editor_command(editor: &str, path: &Path) -> io::Result<ExitStatus> {
+    Command::new(editor).arg(path).status()
+}
+
 fn next_timeout(app: &App) -> Duration {
     let earliest = match (app.flash_deadline(), app.chord.deadline()) {
         (Some(f), Some(c)) => Some(f.min(c)),
@@ -235,12 +282,12 @@ fn next_timeout(app: &App) -> Duration {
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) {
+fn handle_key(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) -> ActionEffect {
     // Detect external edits before processing the key. On detection the
     // file is reloaded, the keystroke is consumed (re-press to act on the
     // new state), and the per-mutator checks become no-ops downstream.
     if !app.check_external_changes() {
-        return;
+        return ActionEffect::None;
     }
     match app.mode {
         Mode::Insert => handle_insert(app, key),
@@ -252,10 +299,11 @@ fn handle_key(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) {
         }
         Mode::PickProject | Mode::PickContext | Mode::PickSavedFilter => handle_pick(app, key),
         Mode::PickTheme => handle_pick_theme(app, key),
-        Mode::CommandPalette => handle_command_palette(app, key),
+        Mode::CommandPalette => return handle_command_palette(app, key),
         Mode::Share => handle_share(app, key),
-        Mode::Normal | Mode::Visual => handle_normal(app, key, keybinds),
+        Mode::Normal | Mode::Visual => return handle_normal(app, key, keybinds),
     }
+    ActionEffect::None
 }
 
 /// Share overlay: any key dismisses, returning to Normal. The server
@@ -558,7 +606,7 @@ fn handle_pick_theme(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_command_palette(app: &mut App, key: KeyEvent) {
+fn handle_command_palette(app: &mut App, key: KeyEvent) -> ActionEffect {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     // List navigation. Plain j/k must type into the search box — the user
     // might be searching for "jump" — so navigation goes via arrows or
@@ -567,7 +615,7 @@ fn handle_command_palette(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.mode = app.command_palette.take_prior();
             app.draft_clear();
-            return;
+            return ActionEffect::None;
         }
         KeyCode::Enter => {
             let chosen = app.command_palette.current_action();
@@ -578,25 +626,25 @@ fn handle_command_palette(app: &mut App, key: KeyEvent) {
             app.mode = app.command_palette.take_prior();
             app.draft_clear();
             if let Some(action) = chosen {
-                apply_action(app, action);
+                return apply_action(app, action);
             }
-            return;
+            return ActionEffect::None;
         }
         KeyCode::Down => {
             app.command_palette.step(1);
-            return;
+            return ActionEffect::None;
         }
         KeyCode::Up => {
             app.command_palette.step(-1);
-            return;
+            return ActionEffect::None;
         }
         KeyCode::Char('n') if ctrl => {
             app.command_palette.step(1);
-            return;
+            return ActionEffect::None;
         }
         KeyCode::Char('p') if ctrl => {
             app.command_palette.step(-1);
-            return;
+            return ActionEffect::None;
         }
         _ => {}
     }
@@ -605,6 +653,7 @@ fn handle_command_palette(app: &mut App, key: KeyEvent) {
         // same-needle call (e.g. typed-and-deleted character) is a no-op.
         app.command_palette.refresh(app.draft.text());
     }
+    ActionEffect::None
 }
 
 fn handle_prompt(app: &mut App, key: KeyEvent) {
@@ -669,6 +718,8 @@ fn resolve_normal_key(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) -> O
         KeyCode::Char('l') => Action::GoList,
         KeyCode::Char('e' | 'i') => Action::BeginEdit,
         KeyCode::Char('x') => Action::ToggleComplete,
+        KeyCode::Char('m') => Action::AddNote,
+        KeyCode::Char('M') => Action::EditNote,
         // 'dd' chord. First press arms; second fires.
         KeyCode::Char('d') if app.chord.toggle('d') => Action::Delete,
         // 'yy' chord copies the whole line; 'yb' (after 'y' is armed) copies
@@ -730,7 +781,7 @@ fn resolve_normal_key(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) -> O
     })
 }
 
-fn apply_action(app: &mut App, action: Action) {
+fn apply_action(app: &mut App, action: Action) -> ActionEffect {
     // Archive view is read-only with two exceptions: `x` un-archives the
     // row at the cursor, `dd` permanently removes it from done.txt. Other
     // mutating actions flash a hint and abort. Navigation, view-switch,
@@ -742,13 +793,13 @@ fn apply_action(app: &mut App, action: Action) {
                 if let Some(idx) = app.cur_abs() {
                     app.unarchive(idx);
                 }
-                return;
+                return ActionEffect::None;
             }
             Action::Delete => {
                 if let Some(idx) = app.cur_abs() {
                     app.archive_delete(idx);
                 }
-                return;
+                return ActionEffect::None;
             }
             Action::BeginAdd
             | Action::BeginEdit
@@ -758,6 +809,8 @@ fn apply_action(app: &mut App, action: Action) {
             | Action::BeginSearch
             | Action::BeginPromptProject
             | Action::BeginPromptContext
+            | Action::AddNote
+            | Action::EditNote
             | Action::PickProject
             | Action::PickContext
             | Action::PickSavedFilter
@@ -767,7 +820,7 @@ fn apply_action(app: &mut App, action: Action) {
             | Action::ToggleShowFuture
             | Action::Undo => {
                 app.flash("read-only in archive");
-                return;
+                return ActionEffect::None;
             }
             _ => {}
         }
@@ -822,6 +875,12 @@ fn apply_action(app: &mut App, action: Action) {
         Action::CyclePriority => {
             if let Some(abs) = app.cur_abs() {
                 app.cycle_priority(abs);
+            }
+        }
+        Action::AddNote => app.add_note_to_current(),
+        Action::EditNote => {
+            if let Some((name, path)) = app.edit_note_for_current() {
+                return ActionEffect::EditNote { name, path };
             }
         }
         Action::BeginSearch => {
@@ -953,13 +1012,17 @@ fn apply_action(app: &mut App, action: Action) {
             }
         }
     }
+    ActionEffect::None
 }
 
-fn handle_normal(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) {
+fn handle_normal(app: &mut App, key: KeyEvent, keybinds: &KeyBindings) -> ActionEffect {
     if let Some(action) = resolve_normal_key(app, key, keybinds) {
-        apply_action(app, action);
+        let effect = apply_action(app, action);
+        app.clamp_cursor();
+        return effect;
     }
     app.clamp_cursor();
+    ActionEffect::None
 }
 
 fn copy_current_task(app: &mut App, body_only: bool) {
@@ -1018,6 +1081,8 @@ mod tests {
         assert_eq!(resolve(&mut app, key('?')), Some(Action::OpenHelp));
         assert_eq!(resolve(&mut app, ctrl('d')), Some(Action::HalfPageDown),);
         assert_eq!(resolve(&mut app, key('n')), Some(Action::BeginAdd),);
+        assert_eq!(resolve(&mut app, key('m')), Some(Action::AddNote),);
+        assert_eq!(resolve(&mut app, key('M')), Some(Action::EditNote),);
         assert_eq!(resolve(&mut app, key('a')), Some(Action::ToggleArchiveView),);
         assert_eq!(resolve(&mut app, key('A')), Some(Action::ArchiveCompleted),);
         assert_eq!(resolve(&mut app, key('S')), Some(Action::CycleSort),);
@@ -1088,6 +1153,39 @@ mod tests {
     fn p_without_chord_cycles_priority() {
         let mut app = build_app();
         assert_eq!(resolve(&mut app, key('p')), Some(Action::CyclePriority),);
+    }
+
+    #[test]
+    fn edit_note_action_returns_editor_effect() {
+        let mut app = build_app_with_archive("a note:abc.txt\n", None);
+        let expected = app
+            .file_path
+            .parent()
+            .unwrap()
+            .join("notes")
+            .join("abc.txt");
+        assert_eq!(
+            apply_action(&mut app, Action::EditNote),
+            ActionEffect::EditNote {
+                name: "abc.txt".to_string(),
+                path: expected
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_command_uses_editor_and_note_path() {
+        let path = std::env::temp_dir().join(format!(
+            "tuxedo-editor-test-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let status = run_editor_command("touch", &path).expect("run editor command");
+        assert!(status.success());
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

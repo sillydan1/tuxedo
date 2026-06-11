@@ -32,6 +32,8 @@ const EDITING: Section = (
         ("+", "add project"),
         ("yy", "copy line to clipboard"),
         ("yb", "copy body only"),
+        ("m", "add note"),
+        ("M", "edit note"),
         ("u", "undo"),
     ],
 );

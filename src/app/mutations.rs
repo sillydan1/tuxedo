@@ -7,10 +7,11 @@ use super::App;
 use super::types::AddOutcome;
 use crate::core::AddOutcome as CoreAdd;
 use crate::core::{
-    ArchiveDeleteOutcome, ArchiveOutcome, CompleteOutcome, DeleteOutcome, EditOutcome,
-    PriorityOutcome, TagOutcome, UnarchiveOutcome, UndoOutcome,
+    ArchiveDeleteOutcome, ArchiveOutcome, CompleteOutcome, DeleteOutcome, EditNoteOutcome,
+    EditOutcome, NoteOutcome, PriorityOutcome, TagOutcome, UnarchiveOutcome, UndoOutcome,
 };
 use crate::nl;
+use std::path::PathBuf;
 
 impl App {
     pub fn toggle_complete(&mut self, abs: usize) {
@@ -153,6 +154,46 @@ impl App {
         }
     }
 
+    pub fn add_note_to_current(&mut self) {
+        let Some(abs) = self.cur_task_index_in_tasks() else {
+            return;
+        };
+        match self.store.add_note(abs) {
+            NoteOutcome::Added { abs, name, .. } => {
+                self.flash(format!("note:{name}"));
+                self.after_mutation(abs);
+            }
+            NoteOutcome::AlreadyExists { name, .. } => {
+                self.flash(format!("note already exists: {name}"));
+            }
+            NoteOutcome::OutOfRange => {}
+            NoteOutcome::Aborted(r) => self.handle_reconcile_abort(r),
+            NoteOutcome::Error(e) => self.flash(format!("note failed: {e}")),
+        }
+    }
+
+    pub fn edit_note_for_current(&mut self) -> Option<(String, PathBuf)> {
+        let Some(abs) = self.cur_task_index_in_tasks() else {
+            return None;
+        };
+        match self.store.edit_note_target(abs) {
+            EditNoteOutcome::Found { name, path, .. } => Some((name, path)),
+            EditNoteOutcome::Missing { .. } => {
+                self.flash("no note on current task");
+                None
+            }
+            EditNoteOutcome::OutOfRange => None,
+            EditNoteOutcome::Aborted(r) => {
+                self.handle_reconcile_abort(r);
+                None
+            }
+            EditNoteOutcome::Error(e) => {
+                self.flash(format!("note failed: {e}"));
+                None
+            }
+        }
+    }
+
     pub fn undo(&mut self) {
         match self.store.undo() {
             UndoOutcome::Undone => {
@@ -260,6 +301,38 @@ mod tests {
         assert_eq!(app.tasks()[0].contexts, vec!["home"]);
         assert_eq!(app.tasks()[0].raw, "a @home");
         assert_eq!(app.flash_active(), Some("invalid context name"));
+    }
+
+    #[test]
+    fn add_note_to_current_flashes_and_updates_task() {
+        let mut app = build_app("Write recipe +home\n");
+        app.add_note_to_current();
+        assert!(app.tasks()[0].raw.contains(" note:"));
+        assert!(
+            app.flash_active()
+                .is_some_and(|msg| msg.starts_with("note:"))
+        );
+    }
+
+    #[test]
+    fn edit_note_for_current_resolves_existing_note() {
+        let mut app = build_app("Write recipe note:abc.txt\n");
+        let expected = app
+            .file_path
+            .parent()
+            .unwrap()
+            .join("notes")
+            .join("abc.txt");
+        let (name, path) = app.edit_note_for_current().expect("note target");
+        assert_eq!(name, "abc.txt");
+        assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn edit_note_for_current_flashes_when_missing() {
+        let mut app = build_app("Write recipe\n");
+        assert!(app.edit_note_for_current().is_none());
+        assert_eq!(app.flash_active(), Some("no note on current task"));
     }
 
     #[test]
